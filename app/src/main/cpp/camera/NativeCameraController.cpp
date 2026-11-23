@@ -223,6 +223,17 @@ struct NativeCameraController::Impl final : CameraEventSink {
         teardownCameraResourcesLocked(lock);
     }
 
+    // A lens switch within one logical camera keeps the device open on the
+    // Galaxy S23 Ultra (SM-S918B), whose HAL refuses to reopen a just-closed camera for
+    // 1.5-3.5 s (Android 17, diagnostics from two users). Everywhere else the device closes
+    // and reopens as before. debug.rawr.keep_device=1 opts another device in, =0 opts out.
+    bool keepDeviceAcrossLensSwitch() const {
+        const std::string prop = systemProperty("debug.rawr.keep_device");
+        if (prop == "0") return false;
+        if (prop == "1") return true;
+        return deviceModel == "SM-S918B";
+    }
+
     void setLens(const std::string& value) {
         std::unique_lock<std::mutex> lock(mutex);
         if (lensId == value) return;
@@ -242,6 +253,12 @@ struct NativeCameraController::Impl final : CameraEventSink {
         if (!retireSessionLocked(lock, std::chrono::seconds(3), "CAMERA_LENS_SWITCH")) {
             diag("CAMERA_LENS_SWITCH_FORCED from=" + lensId + " to=" + value + " reason=session_close_timeout");
             forceRetireSessionLocked(lock, "CAMERA_LENS_SWITCH");
+        } else if (keepDeviceAcrossLensSwitch() && preferredCameraId.empty()) {
+            // Same logical camera -> keep the device open, rebuild only the session.
+            const auto from = routeForLens(profile, lensId);
+            const auto to = routeForLens(profile, value);
+            if (from && to && !to->cameraId.empty() && from->cameraId == to->cameraId)
+                deviceSession.keepDeviceForNextOpen(to->cameraId);
         }
 
         // Session is now closed or force-retired. It is safe to release the remaining
@@ -1019,6 +1036,34 @@ struct NativeCameraController::Impl final : CameraEventSink {
                                              return stillCurrent();
                                          });
         if (!stillCurrent()) return;
+        if (!sessionCreated && opened && deviceSession.lastOpenReused()) {
+            // A kept device can fail its next configure (S23 Ultra, once after a launch:
+            // device error, then "Broken pipe" on configure). That says nothing about the route's companion
+            // stream: close the device and start this lens again with a fresh open, with no RAW-only penalty.
+            diag("CAMERA_NDK_DEVICE_REUSE_FAILED lensId=" + lensId + " retry=fresh_open");
+            rollbackCameraStartLocked(lock, "reused_device_session");
+            // The dead device drops the camera id from the service for a moment (characteristics
+            // -10001), so an immediate start is rejected at selection and only the stall watchdog
+            // (~8 s) would bring the camera back. Retry the start for up to the open budget instead.
+            const std::string retryLens = lensId;
+            const auto retryDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3500);
+            for (int attempt = 1;; ++attempt) {
+                if (shutDown || lensId != retryLens) return;
+                active = true;
+                startLocked(lock);
+                if (deviceSession.hasDevice() || starting || shutDown) {
+                    if (attempt > 1) diag("CAMERA_NDK_DEVICE_REUSE_RECOVERED attempts=" + std::to_string(attempt));
+                    return;
+                }
+                if (std::chrono::steady_clock::now() >= retryDeadline) {
+                    diag("CAMERA_NDK_DEVICE_REUSE_RETRY_GAVE_UP attempts=" + std::to_string(attempt));
+                    return;
+                }
+                lock.unlock();
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                lock.lock();
+            }
+        }
         if (!sessionCreated) {
             // Some HALs reject RAW + YUV at configure time (observed: physical
             // RAW16 + YUV on a Xiaomi logical camera). Retry this route once
