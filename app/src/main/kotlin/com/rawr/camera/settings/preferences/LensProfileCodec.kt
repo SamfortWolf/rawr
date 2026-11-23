@@ -21,6 +21,7 @@ import com.rawr.camera.settings.model.PhotoStreamSettings
 import com.rawr.camera.settings.model.CompanionMode
 import com.rawr.camera.settings.model.CompanionSettings
 import com.rawr.camera.settings.model.LensCamera
+import com.rawr.camera.settings.model.LensCropEdges
 import com.rawr.camera.settings.model.LensSensorLayout
 import com.rawr.camera.settings.model.LensImage
 import com.rawr.camera.settings.model.LensRequest
@@ -353,6 +354,9 @@ internal object LensProfileCodec {
                 number(exposure, "shutterMaxNs", 0.0..EXTENDED_SHUTTER_MAX_NS.toDouble(), true)
                 flags(exposure, "extended")
             }
+            for (key in listOf("cropEdges", "cropEdgesHighFps")) objectField(image, key)?.let { crop ->
+                for (edge in listOf("left", "top", "right", "bottom")) number(crop, edge, 0.0..65535.0, true)
+            }
             objectField(image, "sensorLayout")?.let { layout ->
                 if (layout.has("block")) {
                     number(layout, "block", 1.0..Int.MAX_VALUE.toDouble(), true)
@@ -463,6 +467,14 @@ internal object LensProfileCodec {
                             if (layout.photoPhaseFit) put("photoPhaseFit", true)
                             layout.colourOrder?.let { put("colourOrder", it) }
                         })
+                }
+                for ((key, edges) in listOf("cropEdges" to i.cropEdges, "cropEdgesHighFps" to i.cropEdgesHighFps)) {
+                    if (edges.enabled) put(key, JSONObject().apply {
+                        if (edges.left > 0) put("left", edges.left)
+                        if (edges.top > 0) put("top", edges.top)
+                        if (edges.right > 0) put("right", edges.right)
+                        if (edges.bottom > 0) put("bottom", edges.bottom)
+                    })
                 }
                 i.distortion?.let { put("distortion", JSONObject(it)) }
                 if (i.mirror != LensMirror.None) put("mirror", i.mirror.wireName)
@@ -597,6 +609,18 @@ internal object LensProfileCodec {
                     photoOutput = layout?.optString("photoOutput")?.takeIf { it in PHOTO_OUTPUTS } ?: "full",
                     photoPhaseFit = layout?.optBoolean("photoPhaseFit", false) ?: false
                 ),
+                cropEdges = image?.optJSONObject("cropEdges")?.let {
+                    LensCropEdges(left = it.optInt("left", 0).coerceAtLeast(0),
+                                  top = it.optInt("top", 0).coerceAtLeast(0),
+                                  right = it.optInt("right", 0).coerceAtLeast(0),
+                                  bottom = it.optInt("bottom", 0).coerceAtLeast(0))
+                } ?: LensCropEdges(),
+                cropEdgesHighFps = image?.optJSONObject("cropEdgesHighFps")?.let {
+                    LensCropEdges(left = it.optInt("left", 0).coerceAtLeast(0),
+                                  top = it.optInt("top", 0).coerceAtLeast(0),
+                                  right = it.optInt("right", 0).coerceAtLeast(0),
+                                  bottom = it.optInt("bottom", 0).coerceAtLeast(0))
+                } ?: LensCropEdges(),
                 distortion = image?.optJSONObject("distortion")?.toString(),
                 mirror = LensMirror.fromWire(image?.optString("mirror")),
                 dcp = image?.optJSONObject("dcp")?.let { d ->

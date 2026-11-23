@@ -25,6 +25,7 @@
 #include "diagnostics/logging/RuntimeTraceRecorder.h"
 #include "diagnostics/timing/CaptureStageTimer.h"
 #include "geometry/CfaPattern.h"
+#include "geometry/LensDistortion.h"
 #include "capture/FullSizeFallbacks.h"
 #include "capture/BurstLimits.h"
 #include "imaging/BinnedCorner.h"
@@ -34,6 +35,7 @@
 #include "imaging/RawFrameLease.h"
 #include "metadata/MetadataDiagnostics.h"
 #include "session/SessionEngine.h"
+#include "video/ContextKeptArea.h"
 #include "video_pipeline/VideoCrop.h"
 #include "vulkan/VulkanDispatch.h"
 
@@ -79,6 +81,8 @@ SessionEngine::SessionEngine(std::string filesDir) : filesDir_(std::move(filesDi
         cameraSetupGeneration_ = generation;
         const bool configured = realtime_.configureCamera(generation, metadata);
         lastCameraContext_ = std::make_shared<const rawrcam::metadata::CameraContextMetadata>(metadata);
+        // Recordings frame inside the image area: padded raw edges stay out.
+        videoSession_.setKeptArea(videoKeptAreaLocked(metadata));
         profileReaderUsage_ = metadata.rawReaderUsage;
         profileMaxImages_ = metadata.rawBufferCount;
         profileReaderProbe_ = metadata.rawBufferTestFirst;
@@ -305,6 +309,23 @@ void SessionEngine::setVideoPreviewCropOut(uint32_t width, uint32_t height) {
     swapchainRenderer_.resetLogging();
 }
 
+rawrcam::video::VideoKeptArea SessionEngine::videoKeptAreaLocked(
+    const rawrcam::metadata::CameraContextMetadata& m) const {
+    // Above 30 fps the sensor mode can pad more edges (image.cropEdgesHighFps).
+    return rawrcam::video::contextKeptArea(realtime_.rawWidth(), realtime_.rawHeight(), m, videoHighFps_);
+}
+
+void SessionEngine::setVideoHighFps(bool high) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (videoHighFps_ == high) return;
+    videoHighFps_ = high;
+    realtime_.coordinator().setVideoHighFps(high);
+    if (!lastCameraContext_) return;
+    const auto kept = videoKeptAreaLocked(*lastCameraContext_);
+    LOGI("VIDEO_KEPT_AREA highFps=%d kept=%u,%u %ux%u", high ? 1 : 0, kept.x, kept.y, kept.width, kept.height);
+    videoSession_.setKeptArea(kept);
+}
+
 rawrcam::geometry::SourceCropRect SessionEngine::previewVideoCropRectLocked() const {
     rawrcam::geometry::SourceCropRect crop{};
     if (videoCropOutWidth_ == 0 || videoCropOutHeight_ == 0 || !realtime_.configured()) {
@@ -315,10 +336,16 @@ rawrcam::geometry::SourceCropRect SessionEngine::previewVideoCropRectLocked() co
     const uint32_t previewW = realtime_.previewWidth();
     const uint32_t previewH = realtime_.previewHeight();
     if (rawW < 2 || rawH < 2 || previewW == 0 || previewH == 0) return crop;
-    const auto full = rawrcam::video::videoSourceRect(rawW, rawH, videoCropOutWidth_, videoCropOutHeight_);
+    const auto kept = lastCameraContext_ ? videoKeptAreaLocked(*lastCameraContext_) : rawrcam::video::VideoKeptArea{};
+    const auto full = rawrcam::video::videoSourceRect(rawW, rawH, videoCropOutWidth_, videoCropOutHeight_, kept);
     if (full.width == 0) return crop;
-    const auto scaled = rawrcam::video::scaleVideoSourceRect(full, rawW, rawH, previewW, previewH);
+    auto scaled = rawrcam::video::scaleVideoSourceRect(full, rawW, rawH, previewW, previewH);
     if (scaled.width == 0) return crop;
+    // The window the preview presents: mirrored with the lens, as RawDevelopRecorder passes it.
+    const uint32_t mirror = lastCameraContext_ ? lastCameraContext_->profileMirror : 0u;
+    scaled = rawrcam::video::mirrorVideoSourceRect(scaled, previewW, previewH,
+                                                   (mirror & rawrcam::geometry::kLensMirrorHorizontal) != 0u,
+                                                   (mirror & rawrcam::geometry::kLensMirrorVertical) != 0u);
     crop = {scaled.x, scaled.y, scaled.width, scaled.height, true};
     return crop;
 }

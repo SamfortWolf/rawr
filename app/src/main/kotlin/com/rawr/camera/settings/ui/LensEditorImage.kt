@@ -71,6 +71,7 @@ import com.rawr.camera.settings.model.AuxJpegSettings
 import com.rawr.camera.settings.model.PhotoStreamSettings
 import com.rawr.camera.settings.model.CompanionMode
 import com.rawr.camera.settings.model.LensCamera
+import com.rawr.camera.settings.model.LensCropEdges
 import com.rawr.camera.settings.model.LensSensorLayout
 import com.rawr.camera.settings.model.LensOutputSize
 import com.rawr.camera.settings.model.LensSession
@@ -201,6 +202,58 @@ internal fun LevelField(label: String, value: Float, hint: String? = null, onVal
 
 internal fun formatLevel(value: Float): String =
     if (value == Math.round(value).toFloat()) Math.round(value).toString() else value.toString()
+
+@Composable
+internal fun RawEdgeCropGroup(
+    crop: LensCropEdges,
+    rawWidth: Int,
+    rawHeight: Int,
+    cfaBlock: Int,
+    onChange: (LensCropEdges) -> Unit
+) {
+    val period = 2 * cfaBlock.coerceAtLeast(1)
+    SettingsGroup(
+        title = "Raw edge crop",
+        description = "Some sensor modes leave rows or columns with no image in them. Dropping them cleans up " +
+            "the photo and the DNG, and keeps them off the viewfinder. The metering and the scopes still see " +
+            "the whole frame."
+    ) {
+        SettingsSwitchRow(
+            title = "Drop padded raw edges",
+            checked = crop.enabled,
+            testTag = lensEditorTag("crop_edges_enabled")
+        ) { onChange(if (it) LensCropEdges(bottom = period) else LensCropEdges()) }
+        if (crop.enabled) {
+            SettingDivider()
+            if (rawWidth > 0 && rawHeight > 0) {
+                val keptWidth = (rawWidth - crop.left - crop.right).coerceAtLeast(0)
+                val keptHeight = (rawHeight - crop.top - crop.bottom).coerceAtLeast(0)
+                SettingsRow(
+                    title = "Kept raw area",
+                    value = "$keptWidth × $keptHeight",
+                    supportingText = "Of $rawWidth × $rawHeight"
+                )
+                SettingDivider()
+            }
+            CaptureNumberField(
+                "Left", crop.left, Modifier.testTag(lensEditorTag("crop_edges_left")),
+                "Columns dropped from the left edge · steps of $period, so the colour order stays put"
+            ) { onChange(crop.copy(left = it)) }
+            CaptureNumberField(
+                "Right", crop.right, Modifier.testTag(lensEditorTag("crop_edges_right")),
+                "Columns dropped from the right edge · steps of $period"
+            ) { onChange(crop.copy(right = it)) }
+            CaptureNumberField(
+                "Top", crop.top, Modifier.testTag(lensEditorTag("crop_edges_top")),
+                "Rows dropped from the top edge · steps of $period"
+            ) { onChange(crop.copy(top = it)) }
+            CaptureNumberField(
+                "Bottom", crop.bottom, Modifier.testTag(lensEditorTag("crop_edges_bottom")),
+                "Rows dropped from the bottom edge · steps of $period"
+            ) { onChange(crop.copy(bottom = it)) }
+        }
+    }
+}
 
 @Composable
 internal fun SensorLayoutGroup(

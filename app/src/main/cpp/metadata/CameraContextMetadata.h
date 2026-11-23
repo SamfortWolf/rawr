@@ -57,6 +57,18 @@ struct CameraContextMetadata {
     // are already Bayer.
     uint32_t cfaBlock = 1;
     uint32_t photoCfaBlock = 1;  // CFA of the separate photo output before remosaic.
+    // Raw columns/rows the HAL pads with no image (LensRoute::crop*). All four
+    // are multiples of the CFA period, so the kept area keeps the camera's own
+    // colour order. Zeroed on a frame whose edges have already been dropped.
+    uint32_t cropLeft = 0;
+    uint32_t cropTop = 0;
+    uint32_t cropRight = 0;
+    uint32_t cropBottom = 0;
+    // LensRoute::highFpsCrop*: padded edges of the >30 fps sensor mode.
+    uint32_t highFpsCropLeft = 0;
+    uint32_t highFpsCropTop = 0;
+    uint32_t highFpsCropRight = 0;
+    uint32_t highFpsCropBottom = 0;
     // Photo frames are reduced to a quarter of the pixels at ingress (LensRoute::photoReduced); only with
     // photoCfaBlock 4. Reduced frames are Bayer in quarter-DN units: levels are scaled by 4 (reduction x4 sum).
     bool photoReduced = false;

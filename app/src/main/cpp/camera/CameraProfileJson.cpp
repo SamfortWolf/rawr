@@ -700,6 +700,22 @@ std::string serializeCameraProfile(const CameraProfile& profile) {
             layout.text("photoRemosaic", r.photoRemosaic == 3 ? "detail" : r.photoRemosaic == 2 ? "high" : "standard");
             image.raw("sensorLayout", layout.str());
         }
+        if (r.cropLeft || r.cropTop || r.cropRight || r.cropBottom) {
+            ObjectWriter crop;
+            if (r.cropLeft) crop.number("left", r.cropLeft);
+            if (r.cropTop) crop.number("top", r.cropTop);
+            if (r.cropRight) crop.number("right", r.cropRight);
+            if (r.cropBottom) crop.number("bottom", r.cropBottom);
+            image.raw("cropEdges", crop.str());
+        }
+        if (r.highFpsCropLeft || r.highFpsCropTop || r.highFpsCropRight || r.highFpsCropBottom) {
+            ObjectWriter crop;
+            if (r.highFpsCropLeft) crop.number("left", r.highFpsCropLeft);
+            if (r.highFpsCropTop) crop.number("top", r.highFpsCropTop);
+            if (r.highFpsCropRight) crop.number("right", r.highFpsCropRight);
+            if (r.highFpsCropBottom) crop.number("bottom", r.highFpsCropBottom);
+            image.raw("cropEdgesHighFps", crop.str());
+        }
         if (r.distortion) {
             std::string distortion;
             appendDistortion(distortion, *r.distortion);  // ,"distortion":{...}
@@ -1160,6 +1176,32 @@ std::optional<LensRoute> readLens(const Json& l, std::string* error) {
             r.liveRemosaic = live == "fast" ? 0u : live == "detail" ? 3u : 1u;
             r.photoRemosaic = photo == "standard" ? 1u : photo == "detail" ? 3u : 2u;
         }
+    }
+    // Raw edges the HAL pads with non-image rows/columns, dropped before
+    // anything develops or writes the frame.
+    for (const auto& [key, left, top, right, bottom] :
+         {std::tuple{"cropEdges", &r.cropLeft, &r.cropTop, &r.cropRight, &r.cropBottom},
+          std::tuple{"cropEdgesHighFps", &r.highFpsCropLeft, &r.highFpsCropTop, &r.highFpsCropRight,
+                     &r.highFpsCropBottom}}) {
+    if (const Json* c = image.get(key); c && c->kind == Json::Kind::Object) {
+        const uint32_t period = 2u * std::max(1u, r.sensorLayoutBlock);
+        for (const auto& [name, field] : {std::pair<const char*, uint32_t*>{"left", left},
+                                          std::pair<const char*, uint32_t*>{"top", top},
+                                          std::pair<const char*, uint32_t*>{"right", right},
+                                          std::pair<const char*, uint32_t*>{"bottom", bottom}}) {
+            const double value = c->num(name, 0.0);
+            if (value < 0.0 || value != std::floor(value) || value > 65535.0) {
+                if (error) *error = std::string("invalid ") + key + " " + name + " for lens " + r.lensId;
+                return std::nullopt;
+            }
+            if (uint32_t(value) % period != 0u) {
+                if (error) *error = std::string(key) + " " + name + " must be a multiple of " +
+                                    std::to_string(period) + " for lens " + r.lensId;
+                return std::nullopt;
+            }
+            *field = uint32_t(value);
+        }
+    }
     }
     if (!readLevels(image.get("levels"), r.levels)) {
         if (error) *error = "invalid levels for lens " + r.lensId;

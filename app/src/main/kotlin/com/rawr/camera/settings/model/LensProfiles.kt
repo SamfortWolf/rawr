@@ -294,6 +294,10 @@ data class LensImage(
     /** Black/white levels of the lens; a stream can override them. */
     val levels: LensLevels = LensLevels(),
     val sensorLayout: LensSensorLayout = LensSensorLayout(),
+    /** Padded raw edges this lens drops; zero on both keeps the whole frame. */
+    val cropEdges: LensCropEdges = LensCropEdges(),
+    /** Extra padded edges of the sensor mode used above 30 fps (video framing only). */
+    val cropEdgesHighFps: LensCropEdges = LensCropEdges(),
     /** Lens distortion calibration as its profile JSON object (validated natively); null for none. */
     val distortion: String? = null,
     /** Mirror of the image (photo, video, viewfinder; DNG via its orientation). */
@@ -330,6 +334,19 @@ data class LensImage(
         dcpProfiles = availableDcps.filterNot { it.file == file },
         dcp = dcp?.takeUnless { it.file == file }
     )
+}
+
+/**
+ * Raw columns and rows the camera delivers with no image in them (some vendor modes pad the frame).
+ * Every edge must be a multiple of the CFA period, so the kept area keeps the camera's colour order.
+ */
+data class LensCropEdges(
+    val left: Int = 0,
+    val top: Int = 0,
+    val right: Int = 0,
+    val bottom: Int = 0
+) {
+    val enabled: Boolean get() = left > 0 || top > 0 || right > 0 || bottom > 0
 }
 
 data class LensSensorLayout(
@@ -404,6 +421,20 @@ fun validateLensProfile(lens: LensProfile, others: List<LensProfile>): List<Stri
         if (it.bufferCount != 0 && it.bufferCount !in 2..16) add("Photo stream buffer count must be 2 to 16")
     }
     val layout = lens.image.sensorLayout
+    val crop = lens.image.cropEdges
+    val highFpsCrop = lens.image.cropEdgesHighFps
+    val cropPeriod = 2 * layout.block.coerceAtLeast(1)
+    (listOf("Left" to crop.left, "Top" to crop.top, "Right" to crop.right, "Bottom" to crop.bottom) +
+        listOf("High-fps left" to highFpsCrop.left, "High-fps top" to highFpsCrop.top,
+            "High-fps right" to highFpsCrop.right, "High-fps bottom" to highFpsCrop.bottom))
+        .forEach { (edge, value) ->
+            if (value < 0) add("$edge raw edge crop can't be negative")
+            else if (value % cropPeriod != 0) add("$edge raw edge crop must be a multiple of $cropPeriod")
+        }
+    if (streams.raw.choice.width > 0 && crop.left + crop.right >= streams.raw.choice.width)
+        add("The left and right raw edge crops leave nothing of the frame")
+    if (streams.raw.choice.height > 0 && crop.top + crop.bottom >= streams.raw.choice.height)
+        add("The top and bottom raw edge crops leave nothing of the frame")
     if (layout.photoOutput !in PHOTO_OUTPUTS) add("Unknown photo output ${layout.photoOutput}")
     if (layout.photoOutput != "full" && layout.photoBlock != 4 && layout.photoBlock != 1)
         add("Reduced photo output needs a Bayer or 4×4 photo CFA")

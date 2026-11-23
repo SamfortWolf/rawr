@@ -1,5 +1,7 @@
 #include "pipeline/FrameSubmitCoordinator.h"
 
+#include "video/ContextKeptArea.h"
+
 #include <android/log.h>
 #include <sys/system_properties.h>
 #include <time.h>
@@ -586,8 +588,13 @@ void FrameSubmitCoordinator::submitSplitVideoAndMonitor(const SubmitParams& para
                              [&](VkCommandBuffer cmd, VkImageView view, uint32_t width, uint32_t height) {
                                  if (!diagnosticsPort_.sceneKeyMeteringEnabled()) return;
                                  // Spot and focus are on the full frame; the video image is its record crop.
+                                 const auto* cc = metadata.cameraContext.get();
+                                 const auto kept =
+                                     cc ? rawrcam::video::contextKeptArea(config_.rawWidth, config_.rawHeight, *cc,
+                                                                          videoHighFps_.load(std::memory_order_relaxed))
+                                        : rawrcam::video::VideoKeptArea{};
                                  const auto crop = rawrcam::video::videoSourceRect(config_.rawWidth, config_.rawHeight,
-                                                                                   width, height);
+                                                                                   width, height, kept);
                                  const auto toCrop = [&](const std::array<float, 4>& source) {
                                      std::array<float, 4> out{};
                                      if (!(source[2] > source[0]) || crop.width <= 0 || crop.height <= 0) return out;
@@ -777,6 +784,7 @@ FrameSubmitCoordinator::RecordedSubmit FrameSubmitCoordinator::recordSubmitComma
     recordInput.distortionCorrectionEnabled = distortionCorrectionEnabled_.load(std::memory_order_relaxed);
     recordInput.videoCropOutWidth = videoCropOutWidth_.load(std::memory_order_relaxed);
     recordInput.videoCropOutHeight = videoCropOutHeight_.load(std::memory_order_relaxed);
+    recordInput.videoHighFps = videoHighFps_.load(std::memory_order_relaxed);
     recordInput.filmEnabled = filmSimEnabled_;
     recordInput.filmLook = filmLook_;
     recordInput.viewfinderDivisor = viewfinderDivisor_;
