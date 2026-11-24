@@ -204,7 +204,11 @@ bool RealtimePipeline::configureGeometry(uint64_t generation, uint32_t width, ui
         // still snapshot or its demosaic/render/JPEG state.
         emit("GEOMETRY_GPU_WAIT_BEGIN generation=" + std::to_string(generation));
         SESSION_LOGI("GEOMETRY_GPU_WAIT_BEGIN generation=%llu", static_cast<unsigned long long>(generation));
-        vulkanContext_.waitIdle();
+        // Camera reconfiguration only replaces preview resources. The device
+        // may also be running a detached still render on the multiframe
+        // queue; waiting for the whole device here would serialize lens
+        // switching behind that background work.
+        vkCheck(vulkanContext_.primaryQueue().waitIdle(), "vkQueueWaitIdle realtime geometry reconfigure");
         emit("GEOMETRY_GPU_WAIT_DONE generation=" + std::to_string(generation));
         SESSION_LOGI("GEOMETRY_GPU_WAIT_DONE generation=%llu", static_cast<unsigned long long>(generation));
         realtime_.releaseCompletedSlots(true);

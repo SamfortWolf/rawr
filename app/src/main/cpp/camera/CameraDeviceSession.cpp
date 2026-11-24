@@ -1,6 +1,7 @@
 #include "camera/CameraDeviceSession.h"
 #include "camera/VendorCameraGate.h"
 
+#include <camera/NdkCameraError.h>
 #include <camera/NdkCameraMetadataTags.h>
 
 #include <algorithm>
@@ -862,13 +863,27 @@ bool CameraDeviceSession::retire(std::unique_lock<std::mutex>& lock, std::option
 
     retiringSession->close();
 
+    // Some HALs report SESSION_CLOSED from stopRepeating but do not deliver
+    // the session's onClosed callback until the device itself is closed. Do
+    // not spend the normal multi-second drain timeout waiting for that
+    // callback; give an already-closed session a short grace period, then
+    // let the existing forced-retire/device-close path release the camera.
+    constexpr auto kAlreadyClosedCallbackGrace = std::chrono::milliseconds(250);
+    auto callbackTimeout = timeout;
+    if (stopStatus == ACAMERA_ERROR_SESSION_CLOSED) {
+        callbackTimeout = callbackTimeout ? std::min(*callbackTimeout, kAlreadyClosedCallbackGrace)
+                                          : kAlreadyClosedCallbackGrace;
+        diag(std::string(diagnosticPrefix) + "_SESSION_ALREADY_CLOSED callbackGraceMs=" +
+             std::to_string(callbackTimeout->count()));
+    }
+
     const auto closedPredicate = [this, retiringGeneration] {
         return !closePending_ || closeGeneration_ != retiringGeneration;
     };
 
     bool closed = true;
-    if (timeout) {
-        closed = closed_.wait_for(lock, *timeout, closedPredicate);
+    if (callbackTimeout) {
+        closed = closed_.wait_for(lock, *callbackTimeout, closedPredicate);
     } else {
         closed_.wait(lock, closedPredicate);
     }
